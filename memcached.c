@@ -4027,7 +4027,7 @@ static void drive_machine(conn *c) {
             addrlen = sizeof(addr);
 #ifdef HAVE_ACCEPT4
             if (use_accept4) {
-                sfd = accept4(c->sfd, (struct sockaddr *)&addr, &addrlen, SOCK_NONBLOCK);
+                sfd = accept4(c->sfd, (struct sockaddr *)&addr, &addrlen, 0);
             } else {
                 sfd = accept(c->sfd, (struct sockaddr *)&addr, &addrlen);
             }
@@ -4055,7 +4055,7 @@ static void drive_machine(conn *c) {
                 break;
             }
             if (!use_accept4) {
-                if (fcntl(sfd, F_SETFL, fcntl(sfd, F_GETFL) | O_NONBLOCK) < 0) {
+                if (fcntl(sfd, F_SETFL, fcntl(sfd, F_GETFL) ) < 0) {
                     perror("setting O_NONBLOCK");
                     close(sfd);
                     break;
@@ -4370,7 +4370,7 @@ static int new_socket(struct addrinfo *ai) {
     }
 
     if ((flags = fcntl(sfd, F_GETFL, 0)) < 0 ||
-        fcntl(sfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        fcntl(sfd, F_SETFL, flags ) < 0) {
         perror("setting O_NONBLOCK");
         close(sfd);
         return -1;
@@ -4615,7 +4615,7 @@ static int new_socket_unix(void) {
     }
 
     if ((flags = fcntl(sfd, F_GETFL, 0)) < 0 ||
-        fcntl(sfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        fcntl(sfd, F_SETFL, flags ) < 0) {
         perror("setting O_NONBLOCK");
         close(sfd);
         return -1;

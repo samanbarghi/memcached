@@ -4079,15 +4079,15 @@ static void drive_machine(conn *c) {
             break;
 
         case conn_waiting:
-            if (!update_event(c, EV_READ | EV_PERSIST)) {
+/*            if (!update_event(c, EV_READ | EV_PERSIST)) {
                 if (settings.verbose > 0)
                     fprintf(stderr, "Couldn't update event\n");
                 conn_set_state(c, conn_closing);
                 break;
-            }
+            }*/
 
             conn_set_state(c, conn_read);
-            stop = true;
+            //stop = true;
             break;
 
         case conn_read:
@@ -4095,7 +4095,7 @@ static void drive_machine(conn *c) {
 
             switch (res) {
             case READ_NO_DATA_RECEIVED:
-                conn_set_state(c, conn_waiting);
+                conn_set_state(c, conn_read);
                 break;
             case READ_DATA_RECEIVED:
                 conn_set_state(c, conn_parse_cmd);
@@ -4112,7 +4112,7 @@ static void drive_machine(conn *c) {
         case conn_parse_cmd :
             if (try_read_command(c) == 0) {
                 /* wee need more data! */
-                conn_set_state(c, conn_waiting);
+                conn_set_state(c, conn_read);
             }
 
             break;

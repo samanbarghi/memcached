@@ -4194,13 +4194,13 @@ static void drive_machine(conn *c) {
                 break;
             }
             if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                if (!update_event(c, EV_READ | EV_PERSIST)) {
-                    if (settings.verbose > 0)
-                        fprintf(stderr, "Couldn't update event\n");
-                    conn_set_state(c, conn_closing);
-                    break;
-                }
-                stop = true;
+//                if (!update_event(c, EV_READ | EV_PERSIST)) {
+//                    if (settings.verbose > 0)
+//                        fprintf(stderr, "Couldn't update event\n");
+//                    conn_set_state(c, conn_closing);
+//                    break;
+//                }
+//                stop = true;
                 break;
             }
             /* otherwise we have a real error, on which we close the connection */
@@ -4245,13 +4245,13 @@ static void drive_machine(conn *c) {
                 break;
             }
             if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                if (!update_event(c, EV_READ | EV_PERSIST)) {
-                    if (settings.verbose > 0)
-                        fprintf(stderr, "Couldn't update event\n");
-                    conn_set_state(c, conn_closing);
-                    break;
-                }
-                stop = true;
+//                if (!update_event(c, EV_READ | EV_PERSIST)) {
+//                    if (settings.verbose > 0)
+//                        fprintf(stderr, "Couldn't update event\n");
+//                    conn_set_state(c, conn_closing);
+//                    break;
+//                }
+//                stop = true;
                 break;
             }
             /* otherwise we have a real error, on which we close the connection */

@@ -2263,7 +2263,7 @@ static void reset_cmd_handler(conn *c) {
     if (c->rbytes > 0) {
         conn_set_state(c, conn_parse_cmd);
     } else {
-        conn_set_state(c, conn_waiting);
+        conn_set_state(c, conn_read);
     }
 }
 

@@ -1,0 +1,2 @@
+#!/bin/bash
+LDFLAGS=-L/u4/sbarghi/Research/research-projects/uThread/lib LIBS=-luThread CFLAGS=-I/u4/sbarghi/Research/research-projects/uThread/include ./configure --prefix=/u4/sbarghi/Research/Memcached-ut/memcached-BlockingUT --with-libevent=/u4/sbarghi/Research/LibEvent/libevent

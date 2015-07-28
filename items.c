@@ -13,6 +13,7 @@
 #include <time.h>
 #include <assert.h>
 #include <unistd.h>
+#include <Pthread.h>
 
 /* Forward Declarations */
 static void item_link_q(item *it);
@@ -87,39 +88,22 @@ static size_t item_make_header(const uint8_t nkey, const int flags, const int nb
     return sizeof(item) + nkey + *nsuffix + nbytes;
 }
 
-/*@null@*/
-item *do_item_alloc(char *key, const size_t nkey, const int flags,
-                    const rel_time_t exptime, const int nbytes,
-                    const uint32_t cur_hv) {
-    uint8_t nsuffix;
+item* do_item_alloc_critical_section( uint32_t cur_hv, size_t ntotal, unsigned int id )
+{
     item *it = NULL;
-    char suffix[40];
-    size_t ntotal = item_make_header(nkey + 1, flags, nbytes, suffix, &nsuffix);
-    if (settings.use_cas) {
-        ntotal += sizeof(uint64_t);
-    }
-
-    unsigned int id = slabs_clsid(ntotal);
-    if (id == 0)
-        return 0;
-
     mutex_lock(&cache_lock);
+
     /* do a quick check if we have any expired items in the tail.. */
     int tries = 5;
-    /* Avoid hangs if a slab has nothing but refcounted stuff in it. */
-    int tries_lrutail_reflocked = 1000;
     int tried_alloc = 0;
     item *search;
-    item *next_it;
     void *hold_lock = NULL;
     rel_time_t oldest_live = settings.oldest_live;
 
     search = tails[id];
     /* We walk up *only* for locked items. Never searching for expired.
      * Waste of CPU for almost all deployments */
-    for (; tries > 0 && search != NULL; tries--, search=next_it) {
-        /* we might relink search mid-loop, so search->prev isn't reliable */
-        next_it = search->prev;
+    for (; tries > 0 && search != NULL; tries--, search=search->prev) {
         if (search->nbytes == 0 && search->nkey == 0 && search->it_flags == 1) {
             /* We are a crawler, ignore it. */
             tries++;
@@ -134,12 +118,7 @@ item *do_item_alloc(char *key, const size_t nkey, const int flags,
             continue;
         /* Now see if the item is refcount locked */
         if (refcount_incr(&search->refcount) != 2) {
-            /* Avoid pathological case with ref'ed items in tail */
-            do_item_update_nolock(search);
-            tries_lrutail_reflocked--;
-            tries++;
             refcount_decr(&search->refcount);
-            itemstats[id].lrutail_reflocked++;
             /* Old rare bug could cause a refcount leak. We haven't seen
              * it in years, but we leave this code in to prevent failures
              * just in case */
@@ -151,10 +130,6 @@ item *do_item_alloc(char *key, const size_t nkey, const int flags,
             }
             if (hold_lock)
                 item_trylock_unlock(hold_lock);
-
-            if (tries_lrutail_reflocked < 1)
-                break;
-
             continue;
         }
 
@@ -223,7 +198,31 @@ item *do_item_alloc(char *key, const size_t nkey, const int flags,
      * been removed from the slab LRU.
      */
     it->refcount = 1;     /* the caller will have a reference */
+
     mutex_unlock(&cache_lock);
+
+    return it;
+}
+
+
+/*@null@*/
+item *do_item_alloc(char *key, const size_t nkey, const int flags,
+                    const rel_time_t exptime, const int nbytes,
+                    const uint32_t cur_hv) {
+    uint8_t nsuffix;
+    item *it = NULL;
+    char suffix[40];
+    size_t ntotal = item_make_header(nkey + 1, flags, nbytes, suffix, &nsuffix);
+    if (settings.use_cas) {
+        ntotal += sizeof(uint64_t);
+    }
+
+    unsigned int id = slabs_clsid(ntotal);
+    if (id == 0)
+        return 0;
+    void* cluster = uthread_migrate_to_syscall();
+    it = do_item_alloc_critical_section(cur_hv, ntotal, id);
+    uthread_migrate_back_from_syscall(cluster);
     it->next = it->prev = it->h_next = 0;
     it->slabs_clsid = id;
 
@@ -893,7 +892,7 @@ int start_item_crawler_thread(void) {
     pthread_mutex_lock(&lru_crawler_lock);
     do_run_lru_crawler_thread = 1;
     settings.lru_crawler = true;
-    if ((ret = pthread_create(&item_crawler_tid, NULL,
+    if ((ret = uthread_create(&item_crawler_tid, NULL,
         item_crawler_thread, NULL)) != 0) {
         fprintf(stderr, "Can't create LRU crawler thread: %s\n",
             strerror(ret));

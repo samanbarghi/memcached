@@ -47,6 +47,7 @@
 #include <limits.h>
 #include <sysexits.h>
 #include <stddef.h>
+#include <Pthread.h>
 
 /* FreeBSD 4.x doesn't have IOV_MAX exposed. */
 #ifndef IOV_MAX
@@ -5548,6 +5549,14 @@ int main (int argc, char **argv) {
         perror("failed to ignore SIGPIPE; sigaction");
         exit(EX_OSERR);
     }
+    //SAMAN
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(62, &cpuset);
+
+    uthread_create_syscall_kthread(cpuset);
+    //NAMAS
+
     /* start up worker threads if MT mode */
     memcached_thread_init(settings.num_threads, main_base);
 

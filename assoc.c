@@ -24,6 +24,7 @@
 #include <string.h>
 #include <assert.h>
 #include <pthread.h>
+#include <Pthread.h>
 
 static pthread_cond_t maintenance_cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t maintenance_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -281,7 +282,7 @@ int start_assoc_maintenance_thread() {
         }
     }
     pthread_mutex_init(&maintenance_lock, NULL);
-    if ((ret = pthread_create(&maintenance_tid, NULL,
+    if ((ret = uthread_create(&maintenance_tid, NULL,
                               assoc_maintenance_thread, NULL)) != 0) {
         fprintf(stderr, "Can't create thread: %s\n", strerror(ret));
         return -1;

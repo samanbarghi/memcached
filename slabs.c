@@ -20,6 +20,7 @@
 #include <string.h>
 #include <assert.h>
 #include <pthread.h>
+#include <Pthread.h>
 
 /* powers-of-N allocation structures */
 
@@ -856,12 +857,12 @@ int start_slab_maintenance_thread(void) {
     }
     pthread_mutex_init(&slabs_rebalance_lock, NULL);
 
-    if ((ret = pthread_create(&maintenance_tid, NULL,
+    if ((ret = uthread_create(&maintenance_tid, NULL,
                               slab_maintenance_thread, NULL)) != 0) {
         fprintf(stderr, "Can't create slab maint thread: %s\n", strerror(ret));
         return -1;
     }
-    if ((ret = pthread_create(&rebalance_tid, NULL,
+    if ((ret = uthread_create(&rebalance_tid, NULL,
                               slab_rebalance_thread, NULL)) != 0) {
         fprintf(stderr, "Can't create rebal thread: %s\n", strerror(ret));
         return -1;

@@ -48,6 +48,8 @@
 #include <sysexits.h>
 #include <stddef.h>
 
+#include "cwrapper.h"
+
 /* FreeBSD 4.x doesn't have IOV_MAX exposed. */
 #ifndef IOV_MAX
 #if defined(__FreeBSD__) || defined(__APPLE__)
@@ -405,7 +407,10 @@ conn *conn_new(const int sfd, enum conn_states init_state,
         STATS_UNLOCK();
 
         c->sfd = sfd;
+        c->wconn = connection_create(sfd);
         conns[sfd] = c;
+    }else{
+        connection_poll_open(c->wconn);
     }
 
     c->transport = transport;
@@ -470,13 +475,16 @@ conn *conn_new(const int sfd, enum conn_states init_state,
 
     c->noreply = false;
 
-    event_set(&c->event, sfd, event_flags, event_handler, (void *)c);
-    event_base_set(base, &c->event);
-    c->ev_flags = event_flags;
+    //only do this for the main thread
+    if(base == main_base){
+            event_set(&c->event, sfd, event_flags, event_handler, (void *)c);
+            event_base_set(base, &c->event);
+            c->ev_flags = event_flags;
 
-    if (event_add(&c->event, 0) == -1) {
-        perror("event_add");
-        return NULL;
+            if (event_add(&c->event, 0) == -1) {
+                perror("event_add");
+                return NULL;
+            }
     }
 
     STATS_LOCK();
@@ -560,6 +568,7 @@ void conn_free(conn *c) {
             free(c->suffixlist);
         if (c->iov)
             free(c->iov);
+        connection_destroy(c->wconn);
         free(c);
     }
 }
@@ -568,7 +577,8 @@ static void conn_close(conn *c) {
     assert(c != NULL);
 
     /* delete the event, the socket and the conn */
-    event_del(&c->event);
+    if(is_listen_thread())
+        event_del(&c->event);
 
     if (settings.verbose > 1)
         fprintf(stderr, "<%d connection closed.\n", c->sfd);
@@ -578,6 +588,7 @@ static void conn_close(conn *c) {
     MEMCACHED_CONN_RELEASE(c->sfd);
     conn_set_state(c, conn_closed);
     close(c->sfd);
+    connection_poll_reset(c->wconn);
 
     pthread_mutex_lock(&conn_lock);
     allow_new_conns = true;
@@ -3813,7 +3824,7 @@ static enum try_read_result try_read_udp(conn *c) {
     assert(c != NULL);
 
     c->request_addr_size = sizeof(c->request_addr);
-    res = recvfrom(c->sfd, c->rbuf, c->rsize,
+    res = connection_recvfrom(c->wconn, c->rbuf, c->rsize,
                    0, (struct sockaddr *)&c->request_addr,
                    &c->request_addr_size);
     if (res > 8) {
@@ -3890,7 +3901,7 @@ static enum try_read_result try_read_network(conn *c) {
         }
 
         int avail = c->rsize - c->rbytes;
-        res = read(c->sfd, c->rbuf + c->rbytes, avail);
+        res = connection_read(c->wconn, c->rbuf + c->rbytes, avail);
         if (res > 0) {
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.bytes_read += res;
@@ -3986,7 +3997,7 @@ static enum transmit_result transmit(conn *c) {
         ssize_t res;
         struct msghdr *m = &c->msglist[c->msgcurr];
 
-        res = sendmsg(c->sfd, m, 0);
+        res = connection_sendmsg(c->wconn, m, 0);
         if (res > 0) {
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.bytes_written += res;
@@ -4009,12 +4020,12 @@ static enum transmit_result transmit(conn *c) {
             return TRANSMIT_INCOMPLETE;
         }
         if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (!update_event(c, EV_WRITE | EV_PERSIST)) {
-                if (settings.verbose > 0)
-                    fprintf(stderr, "Couldn't update event\n");
-                conn_set_state(c, conn_closing);
-                return TRANSMIT_HARD_ERROR;
-            }
+//            if (!update_event(c, EV_WRITE | EV_PERSIST)) {
+//                if (settings.verbose > 0)
+//                    fprintf(stderr, "Couldn't update event\n");
+//                conn_set_state(c, conn_closing);
+//                return TRANSMIT_HARD_ERROR;
+//            }
             return TRANSMIT_SOFT_ERROR;
         }
         /* if res == 0 or res == -1 and error is not EAGAIN or EWOULDBLOCK,
@@ -4107,15 +4118,16 @@ static void drive_machine(conn *c) {
             break;
 
         case conn_waiting:
-            if (!update_event(c, EV_READ | EV_PERSIST)) {
+            /*if (!update_event(c, EV_READ | EV_PERSIST)) {
                 if (settings.verbose > 0)
                     fprintf(stderr, "Couldn't update event\n");
                 conn_set_state(c, conn_closing);
                 break;
-            }
+            }*/
 
             conn_set_state(c, conn_read);
-            stop = true;
+            //stop = true;
+            //instead of stopping, just go to read and wait on read
             break;
 
         case conn_read:
@@ -4156,13 +4168,13 @@ static void drive_machine(conn *c) {
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 c->thread->stats.conn_yields++;
                 pthread_mutex_unlock(&c->thread->stats.mutex);
+                /*
                 if (c->rbytes > 0) {
                     /* We have already read in data into the input buffer,
                        so libevent will most likely not signal read events
                        on the socket (unless more data is available. As a
                        hack we should just put in a request to write data,
                        because that should be possible ;-)
-                    */
                     if (!update_event(c, EV_WRITE | EV_PERSIST)) {
                         if (settings.verbose > 0)
                             fprintf(stderr, "Couldn't update event\n");
@@ -4171,6 +4183,9 @@ static void drive_machine(conn *c) {
                     }
                 }
                 stop = true;
+                */
+                nreqs = settings.reqs_per_event;
+                uThread_yield();
             }
             break;
 
@@ -4367,6 +4382,10 @@ static void drive_machine(conn *c) {
     return;
 }
 
+void ut_event_handler(void* arg){
+   conn* c = (conn*) arg;
+   event_handler(c->sfd, 10, arg);
+}
 void event_handler(const int fd, const short which, void *arg) {
     conn *c;
 
@@ -5624,6 +5643,7 @@ int main (int argc, char **argv) {
         perror("failed to ignore SIGPIPE; sigaction");
         exit(EX_OSERR);
     }
+    settings.worker_cluster = cluster_create();
     /* start up worker threads if MT mode */
     memcached_thread_init(settings.num_threads, main_base);
 

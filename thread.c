@@ -3,6 +3,7 @@
  * Thread management for memcached.
  */
 #include "memcached.h"
+#include "thread.h"
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
@@ -10,6 +11,7 @@
 #include <errno.h>
 #include <string.h>
 #include <pthread.h>
+#include "cwrapper.h"
 
 #ifdef __sun
 #include <atomic.h>
@@ -26,6 +28,7 @@ struct conn_queue_item {
     int               read_buffer_size;
     enum network_transport     transport;
     CQ_ITEM          *next;
+    LIBEVENT_THREAD* thread;
 };
 
 /* A connection queue. */
@@ -302,15 +305,18 @@ static void cqi_free(CQ_ITEM *item) {
  */
 static void create_worker(void *(*func)(void *), void *arg) {
     pthread_attr_t  attr;
-    int             ret;
+    //int             ret;
 
     pthread_attr_init(&attr);
 
-    if ((ret = pthread_create(&((LIBEVENT_THREAD*)arg)->thread_id, &attr, func, arg)) != 0) {
+    /*if ((ret = pthread_create(&((LIBEVENT_THREAD*)arg)->thread_id, &attr, func, arg)) != 0) {
         fprintf(stderr, "Can't create thread: %s\n",
                 strerror(ret));
         exit(1);
-    }
+    }*/
+    //((LIBEVENT_THREAD*)arg)->cluster = cluster_create();
+    ((LIBEVENT_THREAD*)arg)->cluster = settings.worker_cluster;
+    ((LIBEVENT_THREAD*)arg)->kt = kThread_create(((LIBEVENT_THREAD*)arg)->cluster);
 }
 
 /*
@@ -333,7 +339,8 @@ static void setup_thread(LIBEVENT_THREAD *me) {
         exit(1);
     }
 
-    /* Listen for notifications from other threads */
+
+    /* Listen for notifications from other threads
     event_set(&me->notify_event, me->notify_receive_fd,
               EV_READ | EV_PERSIST, thread_libevent_process, me);
     event_base_set(me->base, &me->notify_event);
@@ -341,14 +348,15 @@ static void setup_thread(LIBEVENT_THREAD *me) {
     if (event_add(&me->notify_event, 0) == -1) {
         fprintf(stderr, "Can't monitor libevent notify pipe\n");
         exit(1);
-    }
+    } */
 
-    me->new_conn_queue = malloc(sizeof(struct conn_queue));
+    /*me->new_conn_queue = malloc(sizeof(struct conn_queue));
     if (me->new_conn_queue == NULL) {
         perror("Failed to allocate memory for connection queue");
         exit(EXIT_FAILURE);
     }
     cq_init(me->new_conn_queue);
+    */
 
     if (pthread_mutex_init(&me->stats.mutex, NULL) != 0) {
         perror("Failed to initialize mutex");
@@ -424,6 +432,26 @@ static void thread_libevent_process(int fd, short which, void *arg) {
     }
 }
 
+static void *ut_function(void *arg) {
+    CQ_ITEM* item = (CQ_ITEM*) arg;
+    conn *c = conn_new(item->sfd, item->init_state, item->event_flags, item->read_buffer_size, item->transport, item->thread->base);
+    if (c == NULL) {
+        if (IS_UDP(item->transport)) {
+            fprintf(stderr, "Can't listen for events on UDP socket\n");
+            exit(1);
+        } else {
+            if (settings.verbose > 0) {
+                fprintf(stderr, "Can't listen for events on fd %d\n",
+                    item->sfd);
+            }
+            close(item->sfd);
+        }
+    } else {
+        c->thread = item->thread;
+    }
+    cqi_free(item);
+    ut_event_handler( (void*)c);
+}
 /* Which thread we assigned a connection to most recently. */
 static int last_thread = -1;
 
@@ -454,14 +482,16 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
     item->event_flags = event_flags;
     item->read_buffer_size = read_buffer_size;
     item->transport = transport;
+    item->thread = thread
 
-    cq_push(thread->new_conn_queue, item);
+    //cq_push(thread->new_conn_queue, item);
 
     MEMCACHED_CONN_DISPATCH(sfd, thread->thread_id);
-    buf[0] = 'c';
+    /*buf[0] = 'c';
     if (write(thread->notify_send_fd, buf, 1) != 1) {
         perror("Writing to thread notify pipe");
-    }
+    }*/
+    uThread_create_with_cluster(thread->cluster, ut_function, (void*)item);
 }
 
 /*
@@ -796,8 +826,8 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
     }
 
     /* Wait for all the threads to set themselves up before returning. */
-    pthread_mutex_lock(&init_lock);
+/*    pthread_mutex_lock(&init_lock);
     wait_for_thread_registration(nthreads);
-    pthread_mutex_unlock(&init_lock);
+    pthread_mutex_unlock(&init_lock); */
 }
 

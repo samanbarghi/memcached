@@ -18,10 +18,13 @@
 #include <pthread.h>
 #include <unistd.h>
 
+
 #include "protocol_binary.h"
 #include "cache.h"
 
 #include "sasl_defs.h"
+
+#include "cwrapper.h"
 
 /** Maximum length of a key. */
 #define KEY_MAX_LENGTH 250
@@ -337,6 +340,8 @@ struct settings {
     int warm_lru_pct; /* percentage of slab space for WARM_LRU */
     int crawls_persleep; /* Number of LRU crawls to run before sleeping */
     bool expirezero_does_not_evict; /* exptime == 0 goes into NOEXP_LRU */
+
+    WCluster* worker_cluster;
 };
 
 extern struct stats stats;
@@ -399,6 +404,8 @@ typedef struct {
 } crawler;
 
 typedef struct {
+    WCluster* cluster;
+    WkThread* kt;               /* pointer to kThread */
     pthread_t thread_id;        /* unique ID of this thread */
     struct event_base *base;    /* libevent handle this thread uses */
     struct event notify_event;  /* listen event for notify pipe */
@@ -420,6 +427,7 @@ typedef struct {
 typedef struct conn conn;
 struct conn {
     int    sfd;
+    WConnection* wconn;
     sasl_conn_t *sasl_conn;
     bool authenticated;
     enum conn_states  state;

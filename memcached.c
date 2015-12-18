@@ -4161,7 +4161,8 @@ static void drive_machine(conn *c) {
             /* Only process nreqs at a time to avoid starving other
                connections */
 
-            --nreqs;
+            reset_cmd_handler(c);
+            /*--nreqs;
             if (nreqs >= 0) {
                 reset_cmd_handler(c);
             } else {
@@ -4183,10 +4184,10 @@ static void drive_machine(conn *c) {
                     }
                 }
                 stop = true;
-                */
+
                 nreqs = settings.reqs_per_event;
                 uThread_yield();
-            }
+            }*/
             break;
 
         case conn_nread:

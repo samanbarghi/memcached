@@ -48,8 +48,6 @@
 #include <sysexits.h>
 #include <stddef.h>
 
-#include "cwrapper.h"
-
 /* FreeBSD 4.x doesn't have IOV_MAX exposed. */
 #ifndef IOV_MAX
 #if defined(__FreeBSD__) || defined(__APPLE__)
@@ -249,6 +247,8 @@ static void settings_init(void) {
     settings.tail_repair_time = TAIL_REPAIR_TIME_DEFAULT;
     settings.flush_enabled = true;
     settings.crawls_persleep = 1000;
+
+    settings.thread_pause = false;
 }
 
 /*
@@ -4060,6 +4060,11 @@ static void drive_machine(conn *c) {
     assert(c != NULL);
 
     while (!stop) {
+        if(unlikely(settings.thread_pause)){
+            //printf("Pause\n");
+            register_thread_initialized();
+        }
+
 
         switch(c->state) {
         case conn_listening:

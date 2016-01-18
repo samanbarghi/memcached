@@ -11,7 +11,6 @@
 #include <errno.h>
 #include <string.h>
 #include <pthread.h>
-#include "cwrapper.h"
 
 #ifdef __sun
 #include <atomic.h>
@@ -148,7 +147,7 @@ static void wait_for_thread_registration(int nthreads) {
     }
 }
 
-static void register_thread_initialized(void) {
+void register_thread_initialized(void) {
     pthread_mutex_lock(&init_lock);
     init_count++;
     pthread_cond_signal(&init_cond);
@@ -166,10 +165,12 @@ void pause_threads(enum pause_thread_types type) {
     buf[0] = 0;
     switch (type) {
         case PAUSE_ALL_THREADS:
+            //printf("Lets pause all threads\n");
             slabs_rebalancer_pause();
             lru_crawler_pause();
             lru_maintainer_pause();
         case PAUSE_WORKER_THREADS:
+            //printf("Lets pause some worker threads\n");
             buf[0] = 'p';
             pthread_mutex_lock(&worker_hang_lock);
             break;
@@ -178,6 +179,7 @@ void pause_threads(enum pause_thread_types type) {
             lru_crawler_resume();
             lru_maintainer_resume();
         case RESUME_WORKER_THREADS:
+            settings.thread_pause=false;
             pthread_mutex_unlock(&worker_hang_lock);
             break;
         default:
@@ -192,6 +194,7 @@ void pause_threads(enum pause_thread_types type) {
     }
 
     pthread_mutex_lock(&init_lock);
+    settings.thread_pause=true;
     init_count = 0;
     for (i = 0; i < settings.num_threads; i++) {
         if (write(threads[i].notify_send_fd, buf, 1) != 1) {

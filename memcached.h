@@ -24,7 +24,7 @@
 
 #include "sasl_defs.h"
 
-#include "cwrapper.h"
+#include "uThreads/cwrapper.h"
 
 /** Maximum length of a key. */
 #define KEY_MAX_LENGTH 250
@@ -342,6 +342,7 @@ struct settings {
     bool expirezero_does_not_evict; /* exptime == 0 goes into NOEXP_LRU */
 
     WCluster* worker_cluster;
+    bool thread_pause;
 };
 
 extern struct stats stats;
@@ -601,6 +602,8 @@ void STATS_UNLOCK(void);
 void threadlocal_stats_reset(void);
 void threadlocal_stats_aggregate(struct thread_stats *stats);
 void slab_stats_aggregate(struct thread_stats *stats, struct slab_stats *out);
+extern void register_thread_initialized(void);
+
 
 /* Stat processing functions */
 void append_stat(const char *name, ADD_STAT add_stats, conn *c,
@@ -621,3 +624,4 @@ extern void drop_privileges(void);
 
 #define likely(x)       __builtin_expect((x),1)
 #define unlikely(x)     __builtin_expect((x),0)
+

@@ -5649,7 +5649,8 @@ int main (int argc, char **argv) {
         perror("failed to ignore SIGPIPE; sigaction");
         exit(EX_OSERR);
     }
-    settings.worker_cluster = cluster_create();
+    settings.worker_cluster_1 = cluster_create();
+    settings.worker_cluster_2 = cluster_create();
     /* start up worker threads if MT mode */
     memcached_thread_init(settings.num_threads, main_base);
 

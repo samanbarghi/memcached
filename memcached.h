@@ -341,7 +341,8 @@ struct settings {
     int crawls_persleep; /* Number of LRU crawls to run before sleeping */
     bool expirezero_does_not_evict; /* exptime == 0 goes into NOEXP_LRU */
 
-    WCluster* worker_cluster;
+    WCluster* worker_cluster_1;
+    WCluster* worker_cluster_2;
     bool thread_pause;
 };
 

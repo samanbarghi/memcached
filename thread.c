@@ -318,7 +318,8 @@ static void create_worker(void *(*func)(void *), void *arg) {
         exit(1);
     }*/
     //((LIBEVENT_THREAD*)arg)->cluster = cluster_create();
-    ((LIBEVENT_THREAD*)arg)->cluster = settings.worker_cluster;
+    //((LIBEVENT_THREAD*)arg)->cluster = settings.worker_cluster;
+    ((LIBEVENT_THREAD*)arg)->cluster = ((LIBEVENT_THREAD*)arg)->cluster;
     ((LIBEVENT_THREAD*)arg)->kt = kThread_create(((LIBEVENT_THREAD*)arg)->cluster);
 }
 
@@ -817,6 +818,13 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
 
         threads[i].notify_receive_fd = fds[0];
         threads[i].notify_send_fd = fds[1];
+
+        //for up to 32 threads
+        //Clusters should have up to 16 threads
+//        if(i/16 == 0)
+            threads[i].cluster = settings.worker_cluster_1;
+//        else
+//            threads[i].cluster = settings.worker_cluster_2;
 
         setup_thread(&threads[i]);
         /* Reserve three fds for the libevent base, and two for the pipe */

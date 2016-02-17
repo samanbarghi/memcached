@@ -454,7 +454,7 @@ static void *ut_function(void *arg) {
         c->thread = item->thread;
     }
     cqi_free(item);
-    ut_event_handler( (void*)c);
+    ut_event_handler( (void*)c, c->sfd);
 }
 /* Which thread we assigned a connection to most recently. */
 static int last_thread = -1;
@@ -495,7 +495,7 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
     if (write(thread->notify_send_fd, buf, 1) != 1) {
         perror("Writing to thread notify pipe");
     }*/
-    uThread_create_with_cluster(thread->cluster, ut_function, (void*)item);
+    uThread_create(thread->cluster, ut_function, (void*)item);
 }
 
 /*
@@ -821,10 +821,10 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
 
         //for up to 32 threads
         //Clusters should have up to 16 threads
-//        if(i/16 == 0)
+        if(i/16 == 0)
             threads[i].cluster = settings.worker_cluster_1;
-//        else
-//            threads[i].cluster = settings.worker_cluster_2;
+        else
+            threads[i].cluster = settings.worker_cluster_2;
 
         setup_thread(&threads[i]);
         /* Reserve three fds for the libevent base, and two for the pipe */

@@ -9,7 +9,7 @@
 #define THREAD_H_
 
 
-extern void ut_event_handler(void *);
+extern void ut_event_handler(void *, int);
 
 
 #endif /* THREAD_H_ */

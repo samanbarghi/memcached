@@ -410,7 +410,8 @@ conn *conn_new(const int sfd, enum conn_states init_state,
         c->wconn = connection_create(sfd);
         conns[sfd] = c;
     }else{
-        connection_poll_open(c->wconn);
+        connection_destroy(c->wconn);
+        c->wconn = connection_create(sfd);
     }
 
     c->transport = transport;
@@ -587,8 +588,8 @@ static void conn_close(conn *c) {
 
     MEMCACHED_CONN_RELEASE(c->sfd);
     conn_set_state(c, conn_closed);
-    close(c->sfd);
-    connection_poll_reset(c->wconn);
+    //close(c->sfd);
+    connection_close(c->wconn);
 
     pthread_mutex_lock(&conn_lock);
     allow_new_conns = true;
@@ -3824,7 +3825,7 @@ static enum try_read_result try_read_udp(conn *c) {
     assert(c != NULL);
 
     c->request_addr_size = sizeof(c->request_addr);
-    res = connection_recvfrom(c->wconn, c->rbuf, c->rsize,
+    res = recvfrom(c->sfd, c->rbuf, c->rsize,
                    0, (struct sockaddr *)&c->request_addr,
                    &c->request_addr_size);
     if (res > 8) {
@@ -3901,7 +3902,8 @@ static enum try_read_result try_read_network(conn *c) {
         }
 
         int avail = c->rsize - c->rbytes;
-        res = connection_read(c->wconn, c->rbuf + c->rbytes, avail);
+        //res = connection_read(c->wconn, c->rbuf + c->rbytes, avail);
+        res = read(c->sfd, c->rbuf + c->rbytes, avail);
         if (res > 0) {
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.bytes_read += res;
@@ -3997,7 +3999,7 @@ static enum transmit_result transmit(conn *c) {
         ssize_t res;
         struct msghdr *m = &c->msglist[c->msgcurr];
 
-        res = connection_sendmsg(c->wconn, m, 0);
+        res = sendmsg(c->sfd, m, 0);
         if (res > 0) {
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.bytes_written += res;
@@ -4020,12 +4022,12 @@ static enum transmit_result transmit(conn *c) {
             return TRANSMIT_INCOMPLETE;
         }
         if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-//            if (!update_event(c, EV_WRITE | EV_PERSIST)) {
-//                if (settings.verbose > 0)
-//                    fprintf(stderr, "Couldn't update event\n");
-//                conn_set_state(c, conn_closing);
-//                return TRANSMIT_HARD_ERROR;
-//            }
+/*           if (!update_event(c, EV_WRITE | EV_PERSIST)) {
+                if (settings.verbose > 0)
+                    fprintf(stderr, "Couldn't update event\n");
+                conn_set_state(c, conn_closing);
+                return TRANSMIT_HARD_ERROR;
+            }*/
             return TRANSMIT_SOFT_ERROR;
         }
         /* if res == 0 or res == -1 and error is not EAGAIN or EWOULDBLOCK,
@@ -4060,7 +4062,7 @@ static void drive_machine(conn *c) {
     assert(c != NULL);
 
     while (!stop) {
-        if(unlikely(settings.thread_pause)){
+        if((settings.thread_pause)){
             //printf("Pause\n");
             register_thread_initialized();
         }
@@ -4130,10 +4132,12 @@ static void drive_machine(conn *c) {
                 break;
             }*/
 
+            connection_block_on_read(c->wconn);
             conn_set_state(c, conn_read);
+            nreqs = settings.reqs_per_event;
             //stop = true;
             //instead of stopping, just go to read and wait on read
-            break;
+        break;
 
         case conn_read:
             res = IS_UDP(c->transport) ? try_read_udp(c) : try_read_network(c);
@@ -4166,8 +4170,8 @@ static void drive_machine(conn *c) {
             /* Only process nreqs at a time to avoid starving other
                connections */
 
-            reset_cmd_handler(c);
-            /*--nreqs;
+            //reset_cmd_handler(c);
+            --nreqs;
             if (nreqs >= 0) {
                 reset_cmd_handler(c);
             } else {
@@ -4189,10 +4193,11 @@ static void drive_machine(conn *c) {
                     }
                 }
                 stop = true;
-
+                */
                 nreqs = settings.reqs_per_event;
                 uThread_yield();
-            }*/
+                reset_cmd_handler(c);
+            }
             break;
 
         case conn_nread:
@@ -4227,6 +4232,7 @@ static void drive_machine(conn *c) {
 
             /*  now try reading from the socket */
             res = read(c->sfd, c->ritem, c->rlbytes);
+//            res = connection_read(c->wconn, c->ritem, c->rlbytes);
             if (res > 0) {
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 c->thread->stats.bytes_read += res;
@@ -4243,13 +4249,15 @@ static void drive_machine(conn *c) {
                 break;
             }
             if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                if (!update_event(c, EV_READ | EV_PERSIST)) {
+                /*if (!update_event(c, EV_READ | EV_PERSIST)) {
                     if (settings.verbose > 0)
                         fprintf(stderr, "Couldn't update event\n");
                     conn_set_state(c, conn_closing);
                     break;
-                }
-                stop = true;
+                }*/
+                //stop = true;
+                connection_block_on_read(c->wconn);
+                nreqs = settings.reqs_per_event;
                 break;
             }
             /* otherwise we have a real error, on which we close the connection */
@@ -4282,6 +4290,7 @@ static void drive_machine(conn *c) {
 
             /*  now try reading from the socket */
             res = read(c->sfd, c->rbuf, c->rsize > c->sbytes ? c->sbytes : c->rsize);
+//            res = connection_read(c->wconn, c->rbuf, c->rsize > c->sbytes ? c->sbytes : c->rsize);
             if (res > 0) {
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 c->thread->stats.bytes_read += res;
@@ -4294,13 +4303,16 @@ static void drive_machine(conn *c) {
                 break;
             }
             if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                if (!update_event(c, EV_READ | EV_PERSIST)) {
+                /*if (!update_event(c, EV_READ | EV_PERSIST)) {
                     if (settings.verbose > 0)
                         fprintf(stderr, "Couldn't update event\n");
                     conn_set_state(c, conn_closing);
                     break;
                 }
                 stop = true;
+                */
+                connection_block_on_read(c->wconn);
+                nreqs = settings.reqs_per_event;
                 break;
             }
             /* otherwise we have a real error, on which we close the connection */
@@ -4361,7 +4373,9 @@ static void drive_machine(conn *c) {
                 break;                   /* Continue in state machine. */
 
             case TRANSMIT_SOFT_ERROR:
-                stop = true;
+                //stop = true;
+                connection_block_on_write(c->wconn);
+                nreqs = settings.reqs_per_event;
                 break;
             }
             break;
@@ -4388,9 +4402,8 @@ static void drive_machine(conn *c) {
     return;
 }
 
-void ut_event_handler(void* arg){
-   conn* c = (conn*) arg;
-   event_handler(c->sfd, 10, arg);
+void ut_event_handler(void* arg, int sfd){
+   event_handler(sfd, 10, arg);
 }
 void event_handler(const int fd, const short which, void *arg) {
     conn *c;

@@ -321,6 +321,10 @@ static void create_worker(void *(*func)(void *), void *arg) {
     //((LIBEVENT_THREAD*)arg)->cluster = settings.worker_cluster;
     ((LIBEVENT_THREAD*)arg)->cluster = ((LIBEVENT_THREAD*)arg)->cluster;
     ((LIBEVENT_THREAD*)arg)->kt = kThread_create(((LIBEVENT_THREAD*)arg)->cluster);
+    //kThread_set_user_data(((LIBEVENT_THREAD*)arg)->kt, arg);
+
+    WuThread* ut = uThread_create(0);
+    uThread_start(ut,  ((LIBEVENT_THREAD*)arg)->cluster, register_thread_initialized, 0, 0, 0);
 }
 
 /*
@@ -438,7 +442,9 @@ static void thread_libevent_process(int fd, short which, void *arg) {
 
 static void *ut_function(void *arg) {
     CQ_ITEM* item = (CQ_ITEM*) arg;
-    conn *c = conn_new(item->sfd, item->init_state, item->event_flags, item->read_buffer_size, item->transport, item->thread->base);
+    assert(item->thread != NULL);
+    assert(item->thread->base != NULL);
+    conn *c = conn_new(item->sfd, item->init_state, item->event_flags, item->read_buffer_size, item->transport, NULL);
     if (c == NULL) {
         if (IS_UDP(item->transport)) {
             fprintf(stderr, "Can't listen for events on UDP socket\n");
@@ -451,9 +457,19 @@ static void *ut_function(void *arg) {
             close(item->sfd);
         }
     } else {
-        c->thread = item->thread;
+        //c->thread = item->thread;
+        //TODO: this must be fixed
+        WkThread* kt = (kThread_get_current());
+        for(size_t i =0 ; i < settings.num_threads; i++){
+            if( threads[i].kt == kt){
+                c->thread = &threads[i];
+                break;
+            }
+            if(i == settings.num_threads-1) exit(0);
+        }
     }
     cqi_free(item);
+
     ut_event_handler( (void*)c, c->sfd);
 }
 /* Which thread we assigned a connection to most recently. */
@@ -486,7 +502,7 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
     item->event_flags = event_flags;
     item->read_buffer_size = read_buffer_size;
     item->transport = transport;
-    item->thread = thread
+    item->thread = thread;
 
     //cq_push(thread->new_conn_queue, item);
 
@@ -495,7 +511,8 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
     if (write(thread->notify_send_fd, buf, 1) != 1) {
         perror("Writing to thread notify pipe");
     }*/
-    uThread_create(thread->cluster, ut_function, (void*)item);
+    WuThread* ut = uThread_create(false);
+    uThread_start(ut, thread->cluster, ut_function, (void*)item, 0, 0);
 }
 
 /*
@@ -660,6 +677,8 @@ void threadlocal_stats_reset(void) {
         threads[ii].stats.conn_yields = 0;
         threads[ii].stats.auth_cmds = 0;
         threads[ii].stats.auth_errors = 0;
+        threads[ii].stats.read_requests = 0;
+        threads[ii].stats.blocked_read_requests = 0;
 
         for(sid = 0; sid < MAX_NUMBER_OF_SLAB_CLASSES; sid++) {
             threads[ii].stats.slab_stats[sid].set_cmds = 0;
@@ -700,6 +719,8 @@ void threadlocal_stats_aggregate(struct thread_stats *stats) {
         stats->conn_yields += threads[ii].stats.conn_yields;
         stats->auth_cmds += threads[ii].stats.auth_cmds;
         stats->auth_errors += threads[ii].stats.auth_errors;
+        stats->read_requests += threads[ii].stats.read_requests;
+        stats->blocked_read_requests += threads[ii].stats.blocked_read_requests;
 
         for (sid = 0; sid < MAX_NUMBER_OF_SLAB_CLASSES; sid++) {
             stats->slab_stats[sid].set_cmds +=
@@ -821,10 +842,10 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
 
         //for up to 32 threads
         //Clusters should have up to 16 threads
-        if(i/16 == 0)
-            threads[i].cluster = settings.worker_cluster_1;
-        else
-            threads[i].cluster = settings.worker_cluster_2;
+        //if(i/16 == 0)
+        threads[i].cluster = settings.worker_cluster_1;
+        //else
+        //    threads[i].cluster = settings.worker_cluster_2;
 
         setup_thread(&threads[i]);
         /* Reserve three fds for the libevent base, and two for the pipe */
@@ -837,8 +858,8 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
     }
 
     /* Wait for all the threads to set themselves up before returning. */
-/*    pthread_mutex_lock(&init_lock);
+   pthread_mutex_lock(&init_lock);
     wait_for_thread_registration(nthreads);
-    pthread_mutex_unlock(&init_lock); */
+    pthread_mutex_unlock(&init_lock);
 }
 

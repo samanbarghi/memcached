@@ -23,6 +23,7 @@
 #include <sys/uio.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include "uThreads/cwrapper.h"
 
 /* some POSIX systems need the following definition
  * to get mlockall flags out of sys/mman.h.  */
@@ -85,6 +86,7 @@ static void conn_to_str(const conn *c, char *buf);
 static void settings_init(void);
 
 /* event handling, network IO */
+void ut_event_handler(void* arg, int sfd);
 static void event_handler(const int fd, const short which, void *arg);
 static void conn_close(conn *c);
 static void conn_init(void);
@@ -407,11 +409,11 @@ conn *conn_new(const int sfd, enum conn_states init_state,
         STATS_UNLOCK();
 
         c->sfd = sfd;
-        c->wconn = connection_create(sfd);
+        c->wconn = connection_create_with_fd(sfd);
         conns[sfd] = c;
     }else{
         connection_destroy(c->wconn);
-        c->wconn = connection_create(sfd);
+        c->wconn = connection_create_with_fd(sfd);
     }
 
     c->transport = transport;
@@ -2291,6 +2293,7 @@ static void reset_cmd_handler(conn *c) {
         conn_set_state(c, conn_parse_cmd);
     } else {
         conn_set_state(c, conn_waiting);
+        //conn_set_state(c, conn_read);
     }
 }
 
@@ -2640,6 +2643,8 @@ static void server_stats(ADD_STAT add_stats, conn *c) {
     APPEND_STAT("hash_power_level", "%u", stats.hash_power_level);
     APPEND_STAT("hash_bytes", "%llu", (unsigned long long)stats.hash_bytes);
     APPEND_STAT("hash_is_expanding", "%u", stats.hash_is_expanding);
+    APPEND_STAT("read_requests", "%llu", (unsigned long long)thread_stats.read_requests);
+    APPEND_STAT("blocked_read_requests", "%llu", (unsigned long long)thread_stats.blocked_read_requests);
     if (settings.slab_reassign) {
         APPEND_STAT("slab_reassign_running", "%u", stats.slab_reassign_running);
         APPEND_STAT("slabs_moved", "%llu", stats.slabs_moved);
@@ -3904,6 +3909,12 @@ static enum try_read_result try_read_network(conn *c) {
         int avail = c->rsize - c->rbytes;
         //res = connection_read(c->wconn, c->rbuf + c->rbytes, avail);
         res = read(c->sfd, c->rbuf + c->rbytes, avail);
+
+/*        pthread_mutex_lock(&c->thread->stats.mutex);
+        ++(c->thread->stats.read_requests);
+        pthread_mutex_unlock(&c->thread->stats.mutex);*/
+
+
         if (res > 0) {
             pthread_mutex_lock(&c->thread->stats.mutex);
             c->thread->stats.bytes_read += res;
@@ -4062,8 +4073,8 @@ static void drive_machine(conn *c) {
     assert(c != NULL);
 
     while (!stop) {
-        if((settings.thread_pause)){
-            //printf("Pause\n");
+        if( c->state != conn_listening && (settings.thread_pause)){
+//            printf("Pause\n");
             register_thread_initialized();
         }
 
@@ -4132,19 +4143,29 @@ static void drive_machine(conn *c) {
                 break;
             }*/
 
-            connection_block_on_read(c->wconn);
-            conn_set_state(c, conn_read);
             nreqs = settings.reqs_per_event;
+
+            conn_set_state(c, conn_read);
+            //connection_block_on_read(c->wconn);
+            uThread_yield();
+
             //stop = true;
             //instead of stopping, just go to read and wait on read
-        break;
+        // break;
 
         case conn_read:
             res = IS_UDP(c->transport) ? try_read_udp(c) : try_read_network(c);
 
             switch (res) {
             case READ_NO_DATA_RECEIVED:
-                conn_set_state(c, conn_waiting);
+/*                pthread_mutex_lock(&c->thread->stats.mutex);
+                ++(c->thread->stats.blocked_read_requests);
+                pthread_mutex_unlock(&c->thread->stats.mutex); */
+                uThread_yield();
+                if(connection_block_on_read(c->wconn))
+                    nreqs = settings.reqs_per_event;
+
+//                conn_set_state(c, conn_waiting);
                 break;
             case READ_DATA_RECEIVED:
                 conn_set_state(c, conn_parse_cmd);
@@ -4161,9 +4182,11 @@ static void drive_machine(conn *c) {
         case conn_parse_cmd :
             if (try_read_command(c) == 0) {
                 /* wee need more data! */
-                conn_set_state(c, conn_waiting);
+                //conn_set_state(c, conn_waiting);
+                conn_set_state(c, conn_read);
+                if(connection_block_on_read(c->wconn))
+                    nreqs = settings.reqs_per_event;
             }
-
             break;
 
         case conn_new_cmd:
@@ -4180,7 +4203,7 @@ static void drive_machine(conn *c) {
                 pthread_mutex_unlock(&c->thread->stats.mutex);
                 /*
                 if (c->rbytes > 0) {
-                    /* We have already read in data into the input buffer,
+                     We have already read in data into the input buffer,
                        so libevent will most likely not signal read events
                        on the socket (unless more data is available. As a
                        hack we should just put in a request to write data,
@@ -4195,8 +4218,8 @@ static void drive_machine(conn *c) {
                 stop = true;
                 */
                 nreqs = settings.reqs_per_event;
+                //reset_cmd_handler(c);
                 uThread_yield();
-                reset_cmd_handler(c);
             }
             break;
 
@@ -4231,6 +4254,11 @@ static void drive_machine(conn *c) {
             }
 
             /*  now try reading from the socket */
+/*            pthread_mutex_lock(&c->thread->stats.mutex);
+            ++(c->thread->stats.read_requests);
+            pthread_mutex_unlock(&c->thread->stats.mutex); */
+
+
             res = read(c->sfd, c->ritem, c->rlbytes);
 //            res = connection_read(c->wconn, c->ritem, c->rlbytes);
             if (res > 0) {
@@ -4256,8 +4284,13 @@ static void drive_machine(conn *c) {
                     break;
                 }*/
                 //stop = true;
-                connection_block_on_read(c->wconn);
-                nreqs = settings.reqs_per_event;
+/*                pthread_mutex_lock(&c->thread->stats.mutex);
+                ++(c->thread->stats.blocked_read_requests);
+                pthread_mutex_unlock(&c->thread->stats.mutex); */
+
+                if(connection_block_on_read(c->wconn))
+                    nreqs = settings.reqs_per_event;
+
                 break;
             }
             /* otherwise we have a real error, on which we close the connection */
@@ -4289,6 +4322,11 @@ static void drive_machine(conn *c) {
             }
 
             /*  now try reading from the socket */
+/*            pthread_mutex_lock(&c->thread->stats.mutex);
+            ++(c->thread->stats.read_requests);
+            pthread_mutex_unlock(&c->thread->stats.mutex); */
+
+
             res = read(c->sfd, c->rbuf, c->rsize > c->sbytes ? c->sbytes : c->rsize);
 //            res = connection_read(c->wconn, c->rbuf, c->rsize > c->sbytes ? c->sbytes : c->rsize);
             if (res > 0) {
@@ -4311,8 +4349,12 @@ static void drive_machine(conn *c) {
                 }
                 stop = true;
                 */
-                connection_block_on_read(c->wconn);
-                nreqs = settings.reqs_per_event;
+/*                pthread_mutex_lock(&c->thread->stats.mutex);
+                ++(c->thread->stats.blocked_read_requests);
+                pthread_mutex_unlock(&c->thread->stats.mutex); */
+
+                if(connection_block_on_read(c->wconn))
+                    nreqs = settings.reqs_per_event;
                 break;
             }
             /* otherwise we have a real error, on which we close the connection */
@@ -4374,8 +4416,8 @@ static void drive_machine(conn *c) {
 
             case TRANSMIT_SOFT_ERROR:
                 //stop = true;
-                connection_block_on_write(c->wconn);
                 nreqs = settings.reqs_per_event;
+                connection_block_on_write(c->wconn);
                 break;
             }
             break;
@@ -4403,12 +4445,14 @@ static void drive_machine(conn *c) {
 }
 
 void ut_event_handler(void* arg, int sfd){
+   connection_block_on_read( ((conn*)arg)->wconn);
    event_handler(sfd, 10, arg);
 }
 void event_handler(const int fd, const short which, void *arg) {
     conn *c;
 
     c = (conn *)arg;
+
     assert(c != NULL);
 
     c->which = which;
@@ -5663,7 +5707,7 @@ int main (int argc, char **argv) {
         exit(EX_OSERR);
     }
     settings.worker_cluster_1 = cluster_create();
-    settings.worker_cluster_2 = cluster_create();
+//    settings.io_cluster = cluster_create();
     /* start up worker threads if MT mode */
     memcached_thread_init(settings.num_threads, main_base);
 

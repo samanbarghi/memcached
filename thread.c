@@ -315,8 +315,14 @@ static void create_worker(void *(*func)(void *), void *arg) {
                 strerror(ret));
         exit(1);
     }*/
-    LIBEVENT_THREAD *lethread = (LIBEVENT_THREAD*)arg;
-    lethread->kt = kThread_create(lethread->cluster);
+    LIBEVENT_THREAD *me = (LIBEVENT_THREAD*)arg;
+    me->kt = kThread_create(me->cluster);
+
+    me->l = logger_create();
+    if (me->l == NULL) {
+        abort();
+    }
+
 
     /*WuThread* ut = uThread_create(0);
     uThread_start(ut,  lethread->cluster, register_thread_initialized, 0, 0, 0);*/

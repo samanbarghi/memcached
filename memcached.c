@@ -4073,7 +4073,7 @@ static void drive_machine(conn *c) {
     assert(c != NULL);
 
     while (!stop) {
-        if( c->state != conn_listening && (settings.thread_pause)){
+        if( __builtin_expect(c->state != conn_listening && (settings.thread_pause), false)){
 //            printf("Pause\n");
             register_thread_initialized();
         }
@@ -4161,9 +4161,9 @@ static void drive_machine(conn *c) {
 /*                pthread_mutex_lock(&c->thread->stats.mutex);
                 ++(c->thread->stats.blocked_read_requests);
                 pthread_mutex_unlock(&c->thread->stats.mutex); */
+                nreqs = settings.reqs_per_event;
                 uThread_yield();
-                if(connection_block_on_read(c->wconn))
-                    nreqs = settings.reqs_per_event;
+                connection_block_on_read(c->wconn);
 
 //                conn_set_state(c, conn_waiting);
                 break;
@@ -4288,8 +4288,9 @@ static void drive_machine(conn *c) {
                 ++(c->thread->stats.blocked_read_requests);
                 pthread_mutex_unlock(&c->thread->stats.mutex); */
 
-                if(connection_block_on_read(c->wconn))
-                    nreqs = settings.reqs_per_event;
+                nreqs = settings.reqs_per_event;
+                uThread_yield();
+                connection_block_on_read(c->wconn);
 
                 break;
             }
@@ -4352,9 +4353,9 @@ static void drive_machine(conn *c) {
 /*                pthread_mutex_lock(&c->thread->stats.mutex);
                 ++(c->thread->stats.blocked_read_requests);
                 pthread_mutex_unlock(&c->thread->stats.mutex); */
-
-                if(connection_block_on_read(c->wconn))
-                    nreqs = settings.reqs_per_event;
+                nreqs = settings.reqs_per_event;
+                uThread_yield();
+                connection_block_on_read(c->wconn);
                 break;
             }
             /* otherwise we have a real error, on which we close the connection */
@@ -4417,6 +4418,7 @@ static void drive_machine(conn *c) {
             case TRANSMIT_SOFT_ERROR:
                 //stop = true;
                 nreqs = settings.reqs_per_event;
+                uThread_yield();
                 connection_block_on_write(c->wconn);
                 break;
             }
@@ -4445,7 +4447,9 @@ static void drive_machine(conn *c) {
 }
 
 void ut_event_handler(void* arg, int sfd){
-   connection_block_on_read( ((conn*)arg)->wconn);
+   //connection_block_on_read( ((conn*)arg)->wconn);
+   if(IS_UDP(((conn*)arg)->transport))
+       uThread_yield();
    event_handler(sfd, 10, arg);
 }
 void event_handler(const int fd, const short which, void *arg) {

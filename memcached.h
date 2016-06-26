@@ -9,6 +9,7 @@
 #include "config.h"
 #endif
 
+#include <uThreads/cwrapper.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -358,6 +359,10 @@ struct settings {
     int idle_timeout;       /* Number of seconds to let connections idle */
     unsigned int logger_watcher_buf_size; /* size of logger's per-watcher buffer */
     unsigned int logger_buf_size; /* size of per-thread logger buffer */
+    //uThreads
+    WCluster* worker_cluster;
+    bool thread_pause;
+    //sdaerhTu
 };
 
 extern struct stats stats;
@@ -429,6 +434,10 @@ typedef struct {
     struct conn_queue *new_conn_queue; /* queue of new connections to handle */
     cache_t *suffix_cache;      /* suffix cache */
     logger *l;                  /* logger buffer */
+    //uThreads
+    WCluster* cluster;          /* pointer to thread's cluster */
+    WkThread* kt;               /* pointer to kThread */
+    //sdaerhTu
 } LIBEVENT_THREAD;
 
 typedef struct {
@@ -528,6 +537,7 @@ struct conn {
     int keylen;
     conn   *next;     /* Used for generating a list of conn structures */
     LIBEVENT_THREAD *thread; /* Pointer to the thread object serving this connection */
+    WConnection* wconn;      /* Pointer to uThreads connection object */
 };
 
 /* array of conn structures, indexed by file descriptor */
@@ -620,6 +630,9 @@ void STATS_UNLOCK(void);
 void threadlocal_stats_reset(void);
 void threadlocal_stats_aggregate(struct thread_stats *stats);
 void slab_stats_aggregate(struct thread_stats *stats, struct slab_stats *out);
+//uThreads
+extern void register_thread_initialized(void);
+//sdaerhTu
 
 /* Stat processing functions */
 void append_stat(const char *name, ADD_STAT add_stats, conn *c,

@@ -105,6 +105,9 @@ static void write_bin_error(conn *c, protocol_binary_response_status err,
                             const char *errstr, int swallow);
 
 static void conn_free(conn *c);
+//uThreads
+void ut_event_handler(void* arg, int sfd);
+//sdaerhTu
 
 /** exported globals **/
 struct stats stats;
@@ -259,6 +262,9 @@ static void settings_init(void) {
     settings.crawls_persleep = 1000;
     settings.logger_watcher_buf_size = LOGGER_WATCHER_BUF_SIZE;
     settings.logger_buf_size = LOGGER_BUF_SIZE;
+    //uThreads
+    settings.thread_pause = false;
+    //sdaerhTu
 }
 
 /*
@@ -519,7 +525,13 @@ conn *conn_new(const int sfd, enum conn_states init_state,
 
         c->sfd = sfd;
         conns[sfd] = c;
+        //uThreads
+        c->wconn = connection_create_with_fd(sfd);
+    }else{
+        connection_destroy(c->wconn);
+        c->wconn = connection_create_with_fd(sfd);
     }
+        //sdaerhTu
 
     c->transport = transport;
     c->protocol = settings.binding_protocol;
@@ -584,14 +596,20 @@ conn *conn_new(const int sfd, enum conn_states init_state,
 
     c->noreply = false;
 
-    event_set(&c->event, sfd, event_flags, event_handler, (void *)c);
-    event_base_set(base, &c->event);
-    c->ev_flags = event_flags;
+    //uThreads
+    //only dispatcher thread has an event loop
+    if(base == main_base){
 
-    if (event_add(&c->event, 0) == -1) {
-        perror("event_add");
-        return NULL;
+        event_set(&c->event, sfd, event_flags, event_handler, (void *)c);
+        event_base_set(base, &c->event);
+        c->ev_flags = event_flags;
+
+        if (event_add(&c->event, 0) == -1) {
+            perror("event_add");
+            return NULL;
+        }
     }
+    //sdaerhTu
 
     STATS_LOCK();
     stats.curr_conns++;
@@ -674,6 +692,9 @@ void conn_free(conn *c) {
             free(c->suffixlist);
         if (c->iov)
             free(c->iov);
+        //uThreads
+        connection_destroy(c->wconn);
+        //sdaerhTu
         free(c);
     }
 }
@@ -682,7 +703,10 @@ static void conn_close(conn *c) {
     assert(c != NULL);
 
     /* delete the event, the socket and the conn */
-    event_del(&c->event);
+    //uThreads
+    if(is_listen_thread())
+        event_del(&c->event);
+    //sdaerhTu
 
     if (settings.verbose > 1)
         fprintf(stderr, "<%d connection closed.\n", c->sfd);
@@ -691,7 +715,11 @@ static void conn_close(conn *c) {
 
     MEMCACHED_CONN_RELEASE(c->sfd);
     conn_set_state(c, conn_closed);
-    close(c->sfd);
+    //uThreads
+    //close(c->sfd);
+    //connection_close calls close(fd), so no need to do it twice
+    connection_close(c->wconn);
+    //sdaerhTu
 
     pthread_mutex_lock(&conn_lock);
     allow_new_conns = true;
@@ -4237,12 +4265,12 @@ static enum transmit_result transmit(conn *c) {
             return TRANSMIT_INCOMPLETE;
         }
         if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (!update_event(c, EV_WRITE | EV_PERSIST)) {
+            /*if (!update_event(c, EV_WRITE | EV_PERSIST)) {
                 if (settings.verbose > 0)
                     fprintf(stderr, "Couldn't update event\n");
                 conn_set_state(c, conn_closing);
                 return TRANSMIT_HARD_ERROR;
-            }
+            }*/
             return TRANSMIT_SOFT_ERROR;
         }
         /* if res == 0 or res == -1 and error is not EAGAIN or EWOULDBLOCK,
@@ -4277,7 +4305,9 @@ static void drive_machine(conn *c) {
     assert(c != NULL);
 
     while (!stop) {
-
+        //uThreads
+        if( c->state != conn_listening && (settings.thread_pause)) register_thread_initialized();
+        //sdaerhTu
         switch(c->state) {
         case conn_listening:
             addrlen = sizeof(addr);
@@ -4335,15 +4365,19 @@ static void drive_machine(conn *c) {
             break;
 
         case conn_waiting:
-            if (!update_event(c, EV_READ | EV_PERSIST)) {
+            //uThreads
+            /*if (!update_event(c, EV_READ | EV_PERSIST)) {
                 if (settings.verbose > 0)
                     fprintf(stderr, "Couldn't update event\n");
                 conn_set_state(c, conn_closing);
                 break;
-            }
+            }*/
 
             conn_set_state(c, conn_read);
-            stop = true;
+            nreqs = settings.reqs_per_event;
+            //stop = true;
+            uThread_yield();
+            //sdaerhTu
             break;
 
         case conn_read:
@@ -4351,7 +4385,12 @@ static void drive_machine(conn *c) {
 
             switch (res) {
             case READ_NO_DATA_RECEIVED:
-                conn_set_state(c, conn_waiting);
+                //uThreads
+                //conn_set_state(c, conn_waiting);
+                nreqs = settings.reqs_per_event;
+                uThread_yield();
+                connection_block_on_read(c->wconn);
+                //sdaerhTu
                 break;
             case READ_DATA_RECEIVED:
                 conn_set_state(c, conn_parse_cmd);
@@ -4368,7 +4407,11 @@ static void drive_machine(conn *c) {
         case conn_parse_cmd :
             if (try_read_command(c) == 0) {
                 /* wee need more data! */
-                conn_set_state(c, conn_waiting);
+                //uThreads
+                //conn_set_state(c, conn_waiting);
+                nreqs = settings.reqs_per_event;
+                connection_block_on_read(c->wconn);
+                //sdaerhTu
             }
 
             break;
@@ -4384,21 +4427,25 @@ static void drive_machine(conn *c) {
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 c->thread->stats.conn_yields++;
                 pthread_mutex_unlock(&c->thread->stats.mutex);
-                if (c->rbytes > 0) {
-                    /* We have already read in data into the input buffer,
+                //uThreads
+                /*if (c->rbytes > 0) {
+                      We have already read in data into the input buffer,
                        so libevent will most likely not signal read events
                        on the socket (unless more data is available. As a
                        hack we should just put in a request to write data,
                        because that should be possible ;-)
-                    */
+
                     if (!update_event(c, EV_WRITE | EV_PERSIST)) {
                         if (settings.verbose > 0)
                             fprintf(stderr, "Couldn't update event\n");
                         conn_set_state(c, conn_closing);
                         break;
                     }
-                }
-                stop = true;
+                }*/
+                nreqs = settings.reqs_per_event;
+                uThread_yield();
+                //stop = true;
+                //sdaerhTu
             }
             break;
 
@@ -4450,13 +4497,18 @@ static void drive_machine(conn *c) {
                 break;
             }
             if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                if (!update_event(c, EV_READ | EV_PERSIST)) {
+                //uThreads
+                /*if (!update_event(c, EV_READ | EV_PERSIST)) {
                     if (settings.verbose > 0)
                         fprintf(stderr, "Couldn't update event\n");
                     conn_set_state(c, conn_closing);
                     break;
                 }
-                stop = true;
+                stop = true;*/
+                nreqs = settings.reqs_per_event;
+                uThread_yield();
+                connection_block_on_read(c->wconn);
+                //sdaerhTu
                 break;
             }
             /* otherwise we have a real error, on which we close the connection */
@@ -4501,13 +4553,18 @@ static void drive_machine(conn *c) {
                 break;
             }
             if (res == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                if (!update_event(c, EV_READ | EV_PERSIST)) {
+                //uThreads
+                /*if (!update_event(c, EV_READ | EV_PERSIST)) {
                     if (settings.verbose > 0)
                         fprintf(stderr, "Couldn't update event\n");
                     conn_set_state(c, conn_closing);
                     break;
                 }
-                stop = true;
+                stop = true;*/
+                //sdaerhTu
+                nreqs = settings.reqs_per_event;
+                uThread_yield();
+                connection_block_on_read(c->wconn);
                 break;
             }
             /* otherwise we have a real error, on which we close the connection */
@@ -4568,7 +4625,12 @@ static void drive_machine(conn *c) {
                 break;                   /* Continue in state machine. */
 
             case TRANSMIT_SOFT_ERROR:
-                stop = true;
+                //uThreads
+                //stop = true;
+                nreqs = settings.reqs_per_event;
+                uThread_yield();
+                connection_block_on_write(c->wconn);
+                //sdaerhTu
                 break;
             }
             break;
@@ -4598,6 +4660,12 @@ static void drive_machine(conn *c) {
 
     return;
 }
+//uThreads
+void ut_event_handler(void* arg, int sfd){
+   connection_block_on_read( ((conn*)arg)->wconn);
+   event_handler(sfd, 10, arg);
+}
+//sdaerhTu
 
 void event_handler(const int fd, const short which, void *arg) {
     conn *c;
@@ -6001,6 +6069,9 @@ int main (int argc, char **argv) {
         perror("failed to ignore SIGPIPE; sigaction");
         exit(EX_OSERR);
     }
+    //uThreads
+    settings.worker_cluster = cluster_create();
+    //sdaerhTu
     /* start up worker threads if MT mode */
     memcached_thread_init(settings.num_threads, main_base);
 

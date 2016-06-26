@@ -3,6 +3,7 @@
  * Thread management for memcached.
  */
 #include "memcached.h"
+#include "thread.h"
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
@@ -25,6 +26,7 @@ struct conn_queue_item {
     int               read_buffer_size;
     enum network_transport     transport;
     CQ_ITEM          *next;
+    LIBEVENT_THREAD* thread;
 };
 
 /* A connection queue. */
@@ -78,7 +80,9 @@ static pthread_mutex_t init_lock;
 static pthread_cond_t init_cond;
 
 
-static void thread_libevent_process(int fd, short which, void *arg);
+//uThreads
+//static void thread_libevent_process(int fd, short which, void *arg);
+//sdaerhTu
 
 unsigned short refcount_incr(unsigned short *refcount) {
 #ifdef HAVE_GCC_ATOMICS
@@ -144,7 +148,7 @@ static void wait_for_thread_registration(int nthreads) {
     }
 }
 
-static void register_thread_initialized(void) {
+void register_thread_initialized(void) {
     pthread_mutex_lock(&init_lock);
     init_count++;
     pthread_cond_signal(&init_cond);
@@ -174,6 +178,9 @@ void pause_threads(enum pause_thread_types type) {
             lru_crawler_resume();
             lru_maintainer_resume();
         case RESUME_WORKER_THREADS:
+            //uThreads
+            settings.thread_pause=false;
+            //sdaerhTu
             pthread_mutex_unlock(&worker_hang_lock);
             break;
         default:
@@ -188,6 +195,7 @@ void pause_threads(enum pause_thread_types type) {
     }
 
     pthread_mutex_lock(&init_lock);
+    settings.thread_pause=true;
     init_count = 0;
     for (i = 0; i < settings.num_threads; i++) {
         if (write(threads[i].notify_send_fd, buf, 1) != 1) {
@@ -199,20 +207,17 @@ void pause_threads(enum pause_thread_types type) {
     pthread_mutex_unlock(&init_lock);
 }
 
+//uThreads
 /*
  * Initializes a connection queue.
  */
-static void cq_init(CQ *cq) {
+/*static void cq_init(CQ *cq) {
     pthread_mutex_init(&cq->lock, NULL);
     cq->head = NULL;
     cq->tail = NULL;
 }
 
-/*
- * Looks for an item on a connection queue, but doesn't block if there isn't
- * one.
- * Returns the item, or NULL if no item is available
- */
+
 static CQ_ITEM *cq_pop(CQ *cq) {
     CQ_ITEM *item;
 
@@ -228,9 +233,7 @@ static CQ_ITEM *cq_pop(CQ *cq) {
     return item;
 }
 
-/*
- * Adds an item to a connection queue.
- */
+
 static void cq_push(CQ *cq, CQ_ITEM *item) {
     item->next = NULL;
 
@@ -241,8 +244,9 @@ static void cq_push(CQ *cq, CQ_ITEM *item) {
         cq->tail->next = item;
     cq->tail = item;
     pthread_mutex_unlock(&cq->lock);
-}
+}*/
 
+//sdaerhTu
 /*
  * Returns a fresh connection queue item.
  */
@@ -300,7 +304,8 @@ static void cqi_free(CQ_ITEM *item) {
  * Creates a worker thread.
  */
 static void create_worker(void *(*func)(void *), void *arg) {
-    pthread_attr_t  attr;
+    //uThreads
+    /*pthread_attr_t  attr;
     int             ret;
 
     pthread_attr_init(&attr);
@@ -309,7 +314,13 @@ static void create_worker(void *(*func)(void *), void *arg) {
         fprintf(stderr, "Can't create thread: %s\n",
                 strerror(ret));
         exit(1);
-    }
+    }*/
+    LIBEVENT_THREAD *lethread = (LIBEVENT_THREAD*)arg;
+    lethread->kt = kThread_create(lethread->cluster);
+
+    /*WuThread* ut = uThread_create(0);
+    uThread_start(ut,  lethread->cluster, register_thread_initialized, 0, 0, 0);*/
+    //sdaerhTu
 }
 
 /*
@@ -332,7 +343,8 @@ static void setup_thread(LIBEVENT_THREAD *me) {
         exit(1);
     }
 
-    /* Listen for notifications from other threads */
+    //uThreads
+    /* Listen for notifications from other threads
     event_set(&me->notify_event, me->notify_receive_fd,
               EV_READ | EV_PERSIST, thread_libevent_process, me);
     event_base_set(me->base, &me->notify_event);
@@ -347,8 +359,9 @@ static void setup_thread(LIBEVENT_THREAD *me) {
         perror("Failed to allocate memory for connection queue");
         exit(EXIT_FAILURE);
     }
-    cq_init(me->new_conn_queue);
+    cq_init(me->new_conn_queue);*/
 
+    //sdaerhTu
     if (pthread_mutex_init(&me->stats.mutex, NULL) != 0) {
         perror("Failed to initialize mutex");
         exit(EXIT_FAILURE);
@@ -362,6 +375,38 @@ static void setup_thread(LIBEVENT_THREAD *me) {
     }
 }
 
+static void ut_function(void *arg) {
+    CQ_ITEM* item = (CQ_ITEM*) arg;
+    assert(item->thread != NULL);
+    assert(item->thread->base != NULL);
+    conn *c = conn_new(item->sfd, item->init_state, item->event_flags, item->read_buffer_size, item->transport, NULL);
+    if (c == NULL) {
+        if (IS_UDP(item->transport)) {
+            fprintf(stderr, "Can't listen for events on UDP socket\n");
+            exit(1);
+        } else {
+            if (settings.verbose > 0) {
+                fprintf(stderr, "Can't listen for events on fd %d\n",
+                    item->sfd);
+            }
+            close(item->sfd);
+        }
+    } else {
+        //c->thread = item->thread;
+        //TODO: this must be fixed
+        WkThread* kt = (kThread_get_current());
+        for(size_t i =0 ; i < settings.num_threads; i++){
+            if( threads[i].kt == kt){
+                c->thread = &threads[i];
+                break;
+            }
+            if(i == settings.num_threads-1) exit(0);
+        }
+    }
+    cqi_free(item);
+
+    ut_event_handler( (void*)c, c->sfd);
+}
 /*
  * Worker thread: main event loop
  */
@@ -382,12 +427,12 @@ static void *worker_libevent(void *arg) {
     return NULL;
 }
 
-
+//uThreads
 /*
  * Processes an incoming "handle a new connection" item. This is called when
  * input arrives on the libevent wakeup pipe.
  */
-static void thread_libevent_process(int fd, short which, void *arg) {
+/*static void thread_libevent_process(int fd, short which, void *arg) {
     LIBEVENT_THREAD *me = arg;
     CQ_ITEM *item;
     char buf[1];
@@ -424,11 +469,9 @@ static void thread_libevent_process(int fd, short which, void *arg) {
             cqi_free(item);
         }
         break;
-    /* we were told to pause and report in */
     case 'p':
         register_thread_initialized();
         break;
-    /* a client socket timed out */
     case 't':
         if (read(fd, &timeout_fd, sizeof(timeout_fd)) != sizeof(timeout_fd)) {
             if (settings.verbose > 0)
@@ -438,7 +481,8 @@ static void thread_libevent_process(int fd, short which, void *arg) {
         conn_close_idle(conns[timeout_fd]);
         break;
     }
-}
+}*/
+//sdaerhTu
 
 /* Which thread we assigned a connection to most recently. */
 static int last_thread = -1;
@@ -451,7 +495,7 @@ static int last_thread = -1;
 void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
                        int read_buffer_size, enum network_transport transport) {
     CQ_ITEM *item = cqi_new();
-    char buf[1];
+    //char buf[1];
     if (item == NULL) {
         close(sfd);
         /* given that malloc failed this may also fail, but let's try */
@@ -471,13 +515,20 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
     item->read_buffer_size = read_buffer_size;
     item->transport = transport;
 
-    cq_push(thread->new_conn_queue, item);
+    //uThreads
+    //cq_push(thread->new_conn_queue, item);
 
     MEMCACHED_CONN_DISPATCH(sfd, thread->thread_id);
+    /*
     buf[0] = 'c';
     if (write(thread->notify_send_fd, buf, 1) != 1) {
         perror("Writing to thread notify pipe");
-    }
+    }*/
+    WuThread* ut = uThread_create(false);
+
+    typedef void (*funcvoid1)(void*);
+    funcvoid1 utf = ut_function;
+    uThread_start(ut, thread->cluster, *(void**)(&utf), (void*)item, 0, 0);
 }
 
 /*
@@ -847,6 +898,10 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
         threads[i].notify_receive_fd = fds[0];
         threads[i].notify_send_fd = fds[1];
 
+        //uThreads
+        threads[i].cluster = settings.worker_cluster;
+        //sdaerhTu
+
         setup_thread(&threads[i]);
         /* Reserve three fds for the libevent base, and two for the pipe */
         stats.reserved_fds += 5;
@@ -858,8 +913,8 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
     }
 
     /* Wait for all the threads to set themselves up before returning. */
-    pthread_mutex_lock(&init_lock);
+/*    pthread_mutex_lock(&init_lock);
     wait_for_thread_registration(nthreads);
-    pthread_mutex_unlock(&init_lock);
+    pthread_mutex_unlock(&init_lock); */
 }
 

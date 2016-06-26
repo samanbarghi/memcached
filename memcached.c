@@ -4409,6 +4409,7 @@ static void drive_machine(conn *c) {
                 /* wee need more data! */
                 //uThreads
                 //conn_set_state(c, conn_waiting);
+                conn_set_state(c, conn_read);
                 nreqs = settings.reqs_per_event;
                 connection_block_on_read(c->wconn);
                 //sdaerhTu
@@ -4662,7 +4663,8 @@ static void drive_machine(conn *c) {
 }
 //uThreads
 void ut_event_handler(void* arg, int sfd){
-   connection_block_on_read( ((conn*)arg)->wconn);
+   if(IS_UDP(((conn*)arg)->transport))
+       uThread_yield();
    event_handler(sfd, 10, arg);
 }
 //sdaerhTu

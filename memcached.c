@@ -4138,6 +4138,7 @@ static enum try_read_result try_read_network(conn *c) {
         }
 
         int avail = c->rsize - c->rbytes;
+        uThread_yield();
         res = read(c->sfd, c->rbuf + c->rbytes, avail);
         if (res > 0) {
             pthread_mutex_lock(&c->thread->stats.mutex);
@@ -4374,9 +4375,9 @@ static void drive_machine(conn *c) {
             }*/
 
             conn_set_state(c, conn_read);
-            nreqs = settings.reqs_per_event;
+            //nreqs = settings.reqs_per_event;
             //stop = true;
-            uThread_yield();
+            //uThread_yield();
             //sdaerhTu
             break;
 
@@ -4388,7 +4389,7 @@ static void drive_machine(conn *c) {
                 //uThreads
                 //conn_set_state(c, conn_waiting);
                 nreqs = settings.reqs_per_event;
-                uThread_yield();
+                //uThread_yield();
                 connection_block_on_read(c->wconn);
                 //sdaerhTu
                 break;
@@ -4421,7 +4422,7 @@ static void drive_machine(conn *c) {
             /* Only process nreqs at a time to avoid starving other
                connections */
 
-            --nreqs;
+            //--nreqs;
             if (nreqs >= 0) {
                 reset_cmd_handler(c);
             } else {
@@ -4481,6 +4482,7 @@ static void drive_machine(conn *c) {
             }
 
             /*  now try reading from the socket */
+            uThread_yield();
             res = read(c->sfd, c->ritem, c->rlbytes);
             if (res > 0) {
                 pthread_mutex_lock(&c->thread->stats.mutex);
@@ -4507,7 +4509,7 @@ static void drive_machine(conn *c) {
                 }
                 stop = true;*/
                 nreqs = settings.reqs_per_event;
-                uThread_yield();
+                //uThread_yield();
                 connection_block_on_read(c->wconn);
                 //sdaerhTu
                 break;
@@ -4541,6 +4543,7 @@ static void drive_machine(conn *c) {
             }
 
             /*  now try reading from the socket */
+            uThread_yield();
             res = read(c->sfd, c->rbuf, c->rsize > c->sbytes ? c->sbytes : c->rsize);
             if (res > 0) {
                 pthread_mutex_lock(&c->thread->stats.mutex);
@@ -4564,7 +4567,7 @@ static void drive_machine(conn *c) {
                 stop = true;*/
                 //sdaerhTu
                 nreqs = settings.reqs_per_event;
-                uThread_yield();
+                //uThread_yield();
                 connection_block_on_read(c->wconn);
                 break;
             }

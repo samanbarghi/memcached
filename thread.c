@@ -38,7 +38,7 @@ struct conn_queue {
 };
 
 /* Locks for cache LRU operations */
-pthread_mutex_t lru_locks[POWER_LARGEST];
+WMutex* lru_locks[POWER_LARGEST];
 
 /* Connection lock around accepting new connections */
 pthread_mutex_t conn_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -844,7 +844,8 @@ void memcached_thread_init(int nthreads, struct event_base *main_base) {
     int         power;
 
     for (i = 0; i < POWER_LARGEST; i++) {
-        pthread_mutex_init(&lru_locks[i], NULL);
+        //pthread_mutex_init(&lru_locks[i], NULL);
+        lru_locks[i] = mutex_create();
     }
     pthread_mutex_init(&worker_hang_lock, NULL);
 
